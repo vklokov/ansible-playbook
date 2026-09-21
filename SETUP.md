@@ -9,4 +9,4 @@ apt update && apt install ansible
 ansible-galaxy collection install ansible.posix
 
 ### Run playbook
-ansible-playbook playbook.yml
+ansible-playbook bootstrap.yml
