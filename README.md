@@ -78,6 +78,34 @@ sshd -T | grep -Ei 'permitrootlogin|passwordauthentication|kbdinteractive'
 
 All three should report `no`.
 
+## qBittorrent
+
+`qbittorrent.yml` installs `qbittorrent-nox` as a systemd service under a
+dedicated system user. The web UI is bound to `127.0.0.1` only, so reach it
+through an SSH tunnel. The torrent port is opened in ufw if ufw is installed.
+
+```bash
+ansible-galaxy collection install community.general
+ansible-playbook qbittorrent.yml
+```
+
+Then from your own machine:
+
+```bash
+ssh -fN -L 8080:localhost:8080 deploy@<ip>
+```
+
+Open http://localhost:8080. The temporary `admin` password is printed in the
+journal, change it right away:
+
+```bash
+sudo journalctl -u qbittorrent-nox | grep -i password | tail -1
+```
+
+qBittorrent rewrites its config when it stops. If you change the ports or paths
+in the playbook later, run `sudo systemctl stop qbittorrent-nox` first,
+otherwise your edits get overwritten.
+
 ## Notes
 
 - The sshd drop-in is named `01-hardening.conf` so it is read before

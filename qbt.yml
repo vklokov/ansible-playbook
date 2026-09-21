@@ -1,0 +1,153 @@
+---
+# Install qBittorrent-nox on Ubuntu Server.
+# The web UI listens on 127.0.0.1 only (access it through an SSH tunnel).
+#
+# Needs the community.general collection (ini_file and ufw modules):
+#   ansible-galaxy collection install community.general
+#
+# Run from the repository root:
+#   ansible-playbook qbittorrent.yml
+
+- name: Install qBittorrent-nox
+  hosts: servers
+  become: true
+
+  vars:
+    qbt_user: qbt
+    qbt_home: /var/lib/qbt
+    qbt_download_dir: /srv/torrents
+    qbt_webui_port: 8080
+    qbt_torrent_port: 51413
+    qbt_manage_ufw: true   # open the torrent port in ufw (only if ufw is installed)
+
+  tasks:
+    - name: Install qbittorrent-nox
+      ansible.builtin.apt:
+        name: qbittorrent-nox
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Create system user for qBittorrent
+      ansible.builtin.user:
+        name: "{{ qbt_user }}"
+        system: true
+        home: "{{ qbt_home }}"
+        create_home: true
+        shell: /usr/sbin/nologin
+
+    - name: Create downloads directory
+      ansible.builtin.file:
+        path: "{{ qbt_download_dir }}"
+        state: directory
+        owner: "{{ qbt_user }}"
+        group: "{{ qbt_user }}"
+        mode: "0755"
+
+    - name: Create config directory
+      ansible.builtin.file:
+        path: "{{ qbt_home }}/.config/qBittorrent"
+        state: directory
+        owner: "{{ qbt_user }}"
+        group: "{{ qbt_user }}"
+        mode: "0700"
+
+    # IMPORTANT: qBittorrent rewrites its config when it stops.
+    # On the first run the service is not running yet, so everything applies cleanly.
+    # If you change these variables later, stop the service first:
+    #   sudo systemctl stop qbittorrent-nox
+    - name: Bind web UI to localhost and set port
+      community.general.ini_file:
+        path: "{{ qbt_home }}/.config/qBittorrent/qBittorrent.conf"
+        section: Preferences
+        option: "{{ item.option }}"
+        value: "{{ item.value }}"
+        no_extra_spaces: true
+        owner: "{{ qbt_user }}"
+        group: "{{ qbt_user }}"
+        mode: "0600"
+      loop:
+        - { option: 'WebUI\Address', value: '127.0.0.1' }
+        - { option: 'WebUI\Port', value: '{{ qbt_webui_port }}' }
+        - { option: 'Downloads\SavePath', value: '{{ qbt_download_dir }}' }
+
+    - name: Set download path and torrent port (qBittorrent 4.6+ keys)
+      community.general.ini_file:
+        path: "{{ qbt_home }}/.config/qBittorrent/qBittorrent.conf"
+        section: BitTorrent
+        option: "{{ item.option }}"
+        value: "{{ item.value }}"
+        no_extra_spaces: true
+        owner: "{{ qbt_user }}"
+        group: "{{ qbt_user }}"
+        mode: "0600"
+      loop:
+        - { option: 'Session\DefaultSavePath', value: '{{ qbt_download_dir }}' }
+        - { option: 'Session\Port', value: '{{ qbt_torrent_port }}' }
+
+    - name: Install systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/qbittorrent-nox.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=qBittorrent-nox
+          After=network.target
+
+          [Service]
+          User={{ qbt_user }}
+          ExecStart=/usr/bin/qbittorrent-nox --confirm-legal-notice
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Restart qbittorrent
+
+    - name: Enable and start qbittorrent-nox
+      ansible.builtin.systemd:
+        name: qbittorrent-nox
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Check if ufw is installed
+      ansible.builtin.stat:
+        path: /usr/sbin/ufw
+      register: ufw_bin
+
+    - name: Allow torrent port in ufw (TCP and UDP)
+      community.general.ufw:
+        rule: allow
+        port: "{{ qbt_torrent_port | string }}"
+        proto: "{{ item }}"
+      loop: [tcp, udp]
+      when: qbt_manage_ufw and ufw_bin.stat.exists
+
+    - name: Get web UI listening sockets
+      ansible.builtin.command: "ss -tlnH sport = :{{ qbt_webui_port }}"
+      register: ss_out
+      changed_when: false
+      retries: 5
+      delay: 2
+      until: ss_out.stdout | length > 0
+
+    - name: Verify web UI listens only on localhost
+      ansible.builtin.assert:
+        that: ss_out.stdout_lines | reject('search', '127\.0\.0\.1:') | list | length == 0
+        fail_msg: "Web UI is exposed beyond localhost: {{ ss_out.stdout }}"
+        success_msg: "Web UI listens on localhost only"
+
+    - name: Next steps
+      ansible.builtin.debug:
+        msg:
+          - "Temporary admin password: sudo journalctl -u qbittorrent-nox | grep -i password | tail -1"
+          - "Tunnel from your machine: ssh -fN -L {{ qbt_webui_port }}:localhost:{{ qbt_webui_port }} deploy@SERVER_IP"
+          - "Then open http://localhost:{{ qbt_webui_port }} and change the password (Tools -> Options -> Web UI)"
+
+  handlers:
+    - name: Restart qbittorrent
+      ansible.builtin.systemd:
+        name: qbittorrent-nox
+        state: restarted
