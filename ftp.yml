@@ -1,0 +1,187 @@
+---
+# Install vsftpd with explicit FTPS (TLS) and a single chrooted user.
+# Plain FTP is refused: logins and data transfers must use TLS.
+#
+# The password is generated on the first run and stored in .secrets/ftp_password
+# (git-ignored). Read it with: cat .secrets/ftp_password
+#
+# Run from the repository root:
+#   ansible-playbook ftp.yml
+
+- name: Install FTP server (vsftpd, FTPS)
+  hosts: servers
+  become: true
+
+  vars:
+    ftp_user: ftpuser
+    ftp_root: /srv/ftp                 # chroot base, owned by root, read-only
+    ftp_upload_dir: files              # writable subdirectory inside the chroot
+    ftp_pasv_min: 40000
+    ftp_pasv_max: 40100
+    ftp_pasv_address: ""               # set to the public IP if the server is behind NAT
+    ftp_cert: /etc/ssl/private/vsftpd.pem
+    ftp_password: "{{ lookup('ansible.builtin.password', playbook_dir + '/.secrets/ftp_password length=24 chars=ascii_letters,digits') }}"
+    ftp_manage_ufw: true               # open ports in ufw (only if ufw is installed)
+
+  tasks:
+    - name: Install vsftpd and openssl
+      ansible.builtin.apt:
+        name:
+          - vsftpd
+          - openssl
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # vsftpd's PAM stack rejects users whose shell is not listed in /etc/shells.
+    - name: Allow nologin as a valid shell for PAM
+      ansible.builtin.lineinfile:
+        path: /etc/shells
+        line: /usr/sbin/nologin
+        state: present
+
+    - name: Create chroot base directory (root-owned, not writable)
+      ansible.builtin.file:
+        path: "{{ ftp_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Create FTP user (password is set only on creation)
+      ansible.builtin.user:
+        name: "{{ ftp_user }}"
+        home: "{{ ftp_root }}"
+        create_home: false
+        shell: /usr/sbin/nologin
+        password: "{{ ftp_password | password_hash('sha512') }}"
+        update_password: on_create
+      no_log: true
+
+    - name: Create writable upload directory
+      ansible.builtin.file:
+        path: "{{ ftp_root }}/{{ ftp_upload_dir }}"
+        state: directory
+        owner: "{{ ftp_user }}"
+        group: "{{ ftp_user }}"
+        mode: "0755"
+
+    - name: Only listed users may log in
+      ansible.builtin.copy:
+        dest: /etc/vsftpd.userlist
+        content: "{{ ftp_user }}\n"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart vsftpd
+
+    - name: Generate self-signed TLS certificate
+      ansible.builtin.command: >
+        openssl req -x509 -nodes -days 3650 -newkey rsa:2048
+        -keyout {{ ftp_cert }} -out {{ ftp_cert }}
+        -subj "/CN={{ ansible_facts.fqdn }}"
+      args:
+        creates: "{{ ftp_cert }}"
+      notify: Restart vsftpd
+
+    - name: Restrict certificate permissions
+      ansible.builtin.file:
+        path: "{{ ftp_cert }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Configure vsftpd
+      ansible.builtin.copy:
+        dest: /etc/vsftpd.conf
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+        content: |
+          listen=YES
+          listen_ipv6=NO
+
+          anonymous_enable=NO
+          local_enable=YES
+          write_enable=YES
+          local_umask=022
+          use_localtime=YES
+          xferlog_enable=YES
+          connect_from_port_20=YES
+          pam_service_name=vsftpd
+
+          userlist_enable=YES
+          userlist_file=/etc/vsftpd.userlist
+          userlist_deny=NO
+
+          chroot_local_user=YES
+          local_root={{ ftp_root }}
+
+          pasv_enable=YES
+          pasv_min_port={{ ftp_pasv_min }}
+          pasv_max_port={{ ftp_pasv_max }}
+          {% if ftp_pasv_address | length > 0 %}
+          pasv_address={{ ftp_pasv_address }}
+          {% endif %}
+
+          ssl_enable=YES
+          rsa_cert_file={{ ftp_cert }}
+          rsa_private_key_file={{ ftp_cert }}
+          force_local_logins_ssl=YES
+          force_local_data_ssl=YES
+          ssl_sslv2=NO
+          ssl_sslv3=NO
+          ssl_tlsv1=NO
+          ssl_tlsv1_1=NO
+          ssl_tlsv1_2=YES
+          ssl_ciphers=HIGH
+          require_ssl_reuse=NO
+      notify: Restart vsftpd
+
+    - name: Enable and start vsftpd
+      ansible.builtin.systemd:
+        name: vsftpd
+        enabled: true
+        state: started
+
+    - name: Check if ufw is installed
+      ansible.builtin.stat:
+        path: /usr/sbin/ufw
+      register: ufw_bin
+
+    - name: Allow FTP control port in ufw
+      community.general.ufw:
+        rule: allow
+        port: "21"
+        proto: tcp
+      when: ftp_manage_ufw and ufw_bin.stat.exists
+
+    - name: Allow passive port range in ufw
+      community.general.ufw:
+        rule: allow
+        port: "{{ ftp_pasv_min }}:{{ ftp_pasv_max }}"
+        proto: tcp
+      when: ftp_manage_ufw and ufw_bin.stat.exists
+
+    - name: Verify vsftpd listens on port 21
+      ansible.builtin.command: "ss -tlnH sport = :21"
+      register: ss_out
+      changed_when: false
+      retries: 5
+      delay: 2
+      until: ss_out.stdout | length > 0
+
+    - name: Next steps
+      ansible.builtin.debug:
+        msg:
+          - "Password for {{ ftp_user }}: cat {{ playbook_dir }}/.secrets/ftp_password"
+          - "Connect with an FTPS client (explicit TLS, port 21), upload into /{{ ftp_upload_dir }}"
+          - "The certificate is self-signed, the client will ask to trust it once"
+          - "Open TCP 21 and {{ ftp_pasv_min }}-{{ ftp_pasv_max }} in your provider's firewall too"
+
+  handlers:
+    - name: Restart vsftpd
+      ansible.builtin.systemd:
+        name: vsftpd
+        state: restarted
