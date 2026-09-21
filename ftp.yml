@@ -14,7 +14,7 @@
 
   vars:
     ftp_user: ftpuser
-    ftp_root: /srv/ftp                 # chroot base, owned by root, read-only
+    ftp_root: /srv/torrents            # chroot base, owned by root, read-only
     ftp_upload_dir: files              # writable subdirectory inside the chroot
     ftp_pasv_min: 40000
     ftp_pasv_max: 40100
