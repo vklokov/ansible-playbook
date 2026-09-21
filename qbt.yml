@@ -6,7 +6,7 @@
 #   ansible-galaxy collection install community.general
 #
 # Run from the repository root:
-#   ansible-playbook qbittorrent.yml
+#   ansible-playbook qbt.yml
 
 - name: Install qBittorrent-nox
   hosts: servers
@@ -85,6 +85,19 @@
         - { option: 'Session\DefaultSavePath', value: '{{ qbt_download_dir }}' }
         - { option: 'Session\Port', value: '{{ qbt_torrent_port }}' }
 
+    # The Ubuntu 24.04 package (4.6.x) has no --confirm-legal-notice flag,
+    # the legal notice is accepted through the config instead.
+    - name: Accept legal notice
+      community.general.ini_file:
+        path: "{{ qbt_home }}/.config/qBittorrent/qBittorrent.conf"
+        section: LegalNotice
+        option: Accepted
+        value: "true"
+        no_extra_spaces: true
+        owner: "{{ qbt_user }}"
+        group: "{{ qbt_user }}"
+        mode: "0600"
+
     - name: Install systemd unit
       ansible.builtin.copy:
         dest: /etc/systemd/system/qbittorrent-nox.service
@@ -98,7 +111,7 @@
 
           [Service]
           User={{ qbt_user }}
-          ExecStart=/usr/bin/qbittorrent-nox --confirm-legal-notice
+          ExecStart=/usr/bin/qbittorrent-nox
           Restart=on-failure
 
           [Install]

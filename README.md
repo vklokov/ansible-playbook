@@ -80,13 +80,13 @@ All three should report `no`.
 
 ## qBittorrent
 
-`qbittorrent.yml` installs `qbittorrent-nox` as a systemd service under a
+`qbt.yml` installs `qbittorrent-nox` as a systemd service under a
 dedicated system user. The web UI is bound to `127.0.0.1` only, so reach it
 through an SSH tunnel. The torrent port is opened in ufw if ufw is installed.
 
 ```bash
 ansible-galaxy collection install community.general
-ansible-playbook qbittorrent.yml
+ansible-playbook qbt.yml
 ```
 
 Then from your own machine:
