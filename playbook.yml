@@ -1,0 +1,58 @@
+- name: Base access and SSH hardening
+  hosts: servers
+  become: true
+
+  vars:
+    admin_user: deploy
+    admin_pubkey: "{{ lookup('file', 'ssh/rsa.pub') }}"
+
+  pre_tasks:
+    - name: Make sure the SSH key is set (otherwise we risk losing access)
+      ansible.builtin.assert:
+        that: admin_pubkey | length > 0
+        fail_msg: "SSH key is empty, hardening aborted"
+
+  tasks:
+    - name: Create user without a password
+      ansible.builtin.user:
+        name: "{{ admin_user }}"
+        shell: /bin/bash
+        create_home: true
+        password: "!"            # password locked, key-only login
+        state: present
+
+    - name: Install SSH key
+      ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        key: "{{ admin_pubkey }}"
+        state: present
+        exclusive: true          # no other keys allowed
+
+    - name: Grant passwordless sudo
+      ansible.builtin.copy:
+        dest: "/etc/sudoers.d/90-{{ admin_user }}"
+        content: "{{ admin_user }} ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
+
+    - name: Harden sshd (keys only, no root login)
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/01-hardening.conf
+        content: |
+          PermitRootLogin no
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PubkeyAuthentication yes
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+      notify: Restart ssh
+
+  handlers:
+    - name: Restart ssh
+      ansible.builtin.service:
+        name: ssh
+        state: restarted
