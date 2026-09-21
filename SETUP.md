@@ -1,7 +1,9 @@
 ### Install
 
-sudo apt install pipx
-pipx install --include-deps ansible
+apt update && apt install ansible
+
+# sudo apt install pipx
+# pipx install --include-deps ansible
 
 ### Add plugins
 ansible-galaxy collection install ansible.posix

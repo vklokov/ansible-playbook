@@ -18,7 +18,7 @@
         name: "{{ admin_user }}"
         shell: /bin/bash
         create_home: true
-        password: "!"            # password locked, key-only login
+        password: "!"
         state: present
 
     - name: Install SSH key
@@ -26,7 +26,7 @@
         user: "{{ admin_user }}"
         key: "{{ admin_pubkey }}"
         state: present
-        exclusive: true          # no other keys allowed
+        exclusive: true
 
     - name: Grant passwordless sudo
       ansible.builtin.copy:
